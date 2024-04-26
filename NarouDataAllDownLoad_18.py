@@ -1,5 +1,3 @@
-#『なろう小説API』を用いて、なろうの『全作品情報データを一括取得する』Pythonスクリプト
-#2020-04-26更新
 import requests
 import pandas as pd
 import json
@@ -7,9 +5,13 @@ import time as tm
 import datetime
 import gzip
 from tqdm import tqdm
-tqdm.pandas()
-import xlsxwriter
 import sqlite3
+
+#『なろう小説API』を用いて、なろうの『全作品情報データを一括取得する』Pythonスクリプト
+#2020-04-26更新
+from io import StringIO  # Added import statement
+tqdm.pandas()
+#import xlsxwriter
 
 #リクエストの秒数間隔(1以上を推奨)
 interval = 2
@@ -22,18 +24,18 @@ now_day = now_day.strftime("%Y_%m_%d")
 
 if is_narou:
     filename = 'Narou_All_OUTPUT_%s.xlsx'%now_day
-    sql_filename = 'Narou_All_OUTPUT_%s.sqlite3'%now_day
+    sql_filename = 'Narou_All_OUTPUT.sqlite3'
     api_url="https://api.syosetu.com/novelapi/api/"    
 else:
     filename ='Narou_18_ALL_OUTPUT_%s.xlsx'%now_day
-    sql_filename = 'Narou_18_ALL_OUTPUT_%s.sqlite3'%now_day
+    sql_filename = 'Narou_18_ALL_OUTPUT.sqlite3'
     api_url="https://api.syosetu.com/novel18api/api/"
 
 # データをSqlite3形式でも保存する
-is_save_sqlite = False
+is_save_sqlite = True
 
 #####　以上設定、以下関数　##############
-    
+
 #全作品情報の取得
 def get_all_novel_info():
        
@@ -52,7 +54,7 @@ def get_all_novel_info():
     nowtime = datetime.datetime.now().timestamp()
     lastup = int(nowtime)
                      
-    for i in tqdm(range(all_queue_cnt)):
+    for _ in tqdm(range(all_queue_cnt)):
         payload = {'out': 'json','gzip':5,'opt':'weekly','lim':500,'lastup':"1073779200-"+str(lastup)}
         
         # なろうAPIにリクエスト
@@ -69,7 +71,7 @@ def get_all_novel_info():
         r =  gzip.decompress(res).decode("utf-8")   
     
         # pandasのデータフレームに追加する処理
-        df_temp = pd.read_json(r)
+        df_temp = pd.read_json(StringIO(r))  # Use StringIO to load JSON
         df_temp = df_temp.drop(0)
 
         df = pd.concat([df, df_temp])
@@ -96,16 +98,16 @@ def dump_to_excel(df):
     
     print("export_start",datetime.datetime.now())    
 
-    try:
-        # .xlsx ファイル出力
-        writer = pd.ExcelWriter(filename,options={'strings_to_urls': False}, engine='xlsxwriter')
-        df.to_excel(writer, sheet_name="Sheet1")#Writerを通して書き込み
-        writer.close()
-        
-        print('取得成功数  ',len(df));
-        
-    except:
-        pass
+#    try:
+#        # .xlsx ファイル出力
+#        writer = pd.ExcelWriter(filename,options={'strings_to_urls': False}, engine='xlsxwriter')
+#        df.to_excel(writer, sheet_name="Sheet1")#Writerを通して書き込み
+#        writer.close()
+#        
+#        print('取得成功数  ',len(df));
+#        
+#    except:
+#        pass
     
     ### SQLite3に書き込む処理 (将来エクセルの上限行数を超えたときのため) ###
     if is_save_sqlite == True or len(df) >= 1048576:
@@ -115,13 +117,36 @@ def dump_to_excel(df):
         conn.row_factory = sqlite3.Row 
         c = conn.cursor()
         
-        df.to_sql('novel_data', conn, if_exists='replace')
+        # テーブルが存在するかチェック
+        c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='novel_data'")
+        table_exists = c.fetchone()
+        
+        if table_exists:
+            # 既存のデータを取得
+            c.execute("SELECT ncode FROM novel_data")
+            existing_ncodes = set([row['ncode'] for row in c.fetchall()])
+            
+            # 新しいデータのncode列と比較して、存在しないものだけ新しいテーブルに追加
+            new_ncodes = set(df['ncode']) - existing_ncodes
+            new_data = df[df['ncode'].isin(new_ncodes)]
+            
+            # 新しいデータをnovel_dataテーブルに追加
+            new_data.to_sql('novel_data', conn, if_exists='append', index=False)
+            
+            # 新しいデータをnew_dataテーブルにも追加
+            new_data.to_sql('new_data', conn, if_exists='append', index=False)
+        else:
+            # novel_dataテーブルが存在しない場合は新しく作成し、データを書き込む
+            df.to_sql('novel_data', conn, if_exists='replace', index=False)
+            
+            # 新しいデータをnew_dataテーブルにも追加
+            df.to_sql('new_data', conn, if_exists='replace', index=False)
         
         c.close()
         conn.close()
         
         print("Sqlite3形式でデータを保存しました")
-    
+
 
 #######　関数の実行を指定　##########
 print("start",datetime.datetime.now())
